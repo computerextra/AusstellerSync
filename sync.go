@@ -95,6 +95,7 @@ func main() {
 	if len(Sage) > 0 {
 		for i := range Sage {
 			println("Write MySQL with id:", i)
+			println("Max::", len(Sage))
 			id := Sage[i].Id
 			nummer := Sage[i].Artikelnummer
 			name := strings.ReplaceAll(Sage[i].Artikelname, "'", "\"")
