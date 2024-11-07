@@ -22,6 +22,7 @@ type Artikel struct {
 }
 
 func main() {
+	println("Start")
 	err := godotenv.Load()
 	if err != nil {
 		log.Fatal("Error loading .env file")
@@ -54,12 +55,13 @@ func main() {
 	}
 
 	defer conn.Close()
+	println("Read Sage")
 	rows, err := conn.Query(sage_query)
 	if err != nil {
 		log.Fatalf("Sage Query failed: %s", err.Error())
 	}
 	defer rows.Close()
-
+	println("Sort Sage")
 	var Sage []Artikel
 	for rows.Next() {
 		var Id sql.NullInt64
@@ -89,8 +91,10 @@ func main() {
 		log.Fatal(err)
 	}
 	defer mysql_conn.Close()
+	println("Read MySQL")
 	if len(Sage) > 0 {
 		for i := range Sage {
+			println("Write MySQL with id:", i)
 			id := Sage[i].Id
 			nummer := Sage[i].Artikelnummer
 			name := strings.ReplaceAll(Sage[i].Artikelname, "'", "\"")
