@@ -3,10 +3,9 @@ package main
 import (
 	"database/sql"
 	"fmt"
-	"log"
 	"os"
-	"strconv"
 	"strings"
+	"time"
 
 	_ "github.com/denisenkom/go-mssqldb"
 	_ "github.com/go-sql-driver/mysql"
@@ -22,58 +21,64 @@ type Artikel struct {
 }
 
 func main() {
-	println("Start")
 	err := godotenv.Load()
 	if err != nil {
-		log.Fatal("Error loading .env file")
+		panic(err)
 	}
-	server := os.Getenv("SAGE_SERVER")
-	db := os.Getenv("SAGE_DB")
-	user := os.Getenv("SAGE_USER")
-	password := os.Getenv("SAGE_PASS")
-	port, err := strconv.ParseInt(os.Getenv("SAGE_PORT"), 0, 64)
+	for {
+		fmt.Print("\033[H\033[2J")
+		startTime := time.Now()
+		start()
+
+		fmt.Printf("Aussteller Aktualisert, dauer: %v Minuten\nWarte 1 Stunde\n", time.Since(startTime).Minutes())
+		time.Sleep(1 * time.Hour)
+	}
+}
+
+func start() {
+	fmt.Println("Read Sage Artikel")
+	sage_artikel, err := getSageArtikel()
 	if err != nil {
-		log.Fatal("SAGE_PORT not in .env: ", err)
+		panic(err)
 	}
-
-	mysql_server := os.Getenv("MYSQL_SERVER")
-	mysql_port, err := strconv.ParseInt(os.Getenv("MYSQL_PORT"), 0, 64)
+	fmt.Println("Update Aussteller Database")
+	err = updateDB(sage_artikel)
 	if err != nil {
-		log.Fatal("MYSQL_PORT not in .env: ", err)
+		panic(err)
 	}
-	mysql_user := os.Getenv("MYSQL_USER")
-	mysql_password := os.Getenv("MYSQL_PASS")
-	mysql_db := os.Getenv("MYSQL_DB")
+}
 
-	// Read all products from sage
-	sage_connstring := fmt.Sprintf("server=%s;database=%s;user id=%s;password=%s;port=%d", server, db, user, password, port)
-	sage_query := "select sg_auf_artikel.SG_AUF_ARTIKEL_PK, sg_auf_artikel.ARTNR, sg_auf_artikel.SUCHBEGRIFF, sg_auf_artikel.ZUSTEXT1, sg_auf_vkpreis.PR01 FROM sg_auf_artikel INNER JOIN sg_auf_vkpreis ON sg_auf_artikel.SG_AUF_ARTIKEL_PK = sg_auf_vkpreis.SG_AUF_ARTIKEL_FK"
+func getSageArtikel() ([]Artikel, error) {
+	connectionString, ok := os.LookupEnv("SAGE_URL")
+	if !ok {
+		return nil, fmt.Errorf("failed to read SAGE_URL")
+	}
 
-	conn, err := sql.Open("sqlserver", sage_connstring)
+	conn, err := sql.Open("sqlserver", connectionString)
 	if err != nil {
-		log.Fatalf("Open Sage Connection failed: %s", err.Error())
+		return nil, err
 	}
-
 	defer conn.Close()
-	println("Read Sage")
-	rows, err := conn.Query(sage_query)
+
+	query := "select sg_auf_artikel.SG_AUF_ARTIKEL_PK, sg_auf_artikel.ARTNR, sg_auf_artikel.SUCHBEGRIFF, sg_auf_artikel.ZUSTEXT1, sg_auf_vkpreis.PR01 FROM sg_auf_artikel INNER JOIN sg_auf_vkpreis ON sg_auf_artikel.SG_AUF_ARTIKEL_PK = sg_auf_vkpreis.SG_AUF_ARTIKEL_FK"
+
+	rows, err := conn.Query(query)
 	if err != nil {
-		log.Fatalf("Sage Query failed: %s", err.Error())
+		return nil, err
 	}
 	defer rows.Close()
-	println("Sort Sage")
+
 	var Sage []Artikel
+
 	for rows.Next() {
 		var Id sql.NullInt64
 		var Artikelnummer sql.NullString
 		var Artikelname sql.NullString
 		var Specs sql.NullString
 		var Preis sql.NullFloat64
-
 		if err := rows.Scan(&Id, &Artikelnummer, &Artikelname, &Specs, &Preis); err != nil {
-			log.Fatalf("Scan Sage Row failed: %s", err.Error())
+			return nil, err
 		}
-
 		if Id.Valid && Artikelnummer.Valid && Artikelname.Valid && Specs.Valid && Preis.Valid {
 			var tmp Artikel
 			tmp.Id = int(Id.Int64)
@@ -84,28 +89,36 @@ func main() {
 			Sage = append(Sage, tmp)
 		}
 	}
-
-	mysql_connstring := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s", mysql_user, mysql_password, mysql_server, mysql_port, mysql_db)
-	mysql_conn, err := sql.Open("mysql", mysql_connstring)
-	if err != nil {
-		log.Fatal(err)
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
-	defer mysql_conn.Close()
-	println("Read MySQL")
-	if len(Sage) > 0 {
-		for i := range Sage {
-			println(fmt.Sprintf("Write MySQL: %d of %d", i+1, len(Sage)))
-			id := Sage[i].Id
-			nummer := Sage[i].Artikelnummer
-			name := strings.ReplaceAll(Sage[i].Artikelname, "'", "\"")
-			spec := strings.ReplaceAll(Sage[i].Specs, "'", "\"")
-			price := Sage[i].Preis
-			upsert_query := fmt.Sprintf("INSERT INTO Aussteller (id, Artikelnummer, Artikelname, Specs, Preis) VALUES (%d, '%s', '%s','%s','%.2f') ON DUPLICATE KEY UPDATE Artikelname = '%s', Specs = '%s', Preis = '%.2f'", id, nummer, name, spec, price, name, spec, price)
-			_, err := mysql_conn.Exec(upsert_query)
-			if err != nil {
-				log.Print(upsert_query)
-				log.Fatal(err)
-			}
+
+	return Sage, nil
+}
+
+func updateDB(artikel []Artikel) error {
+	connstring, ok := os.LookupEnv("DATABASE_URL")
+	if !ok {
+		return fmt.Errorf("failed to read DATABASE_URL")
+	}
+
+	rawQuery := "INSERT INTO Aussteller (id, Artikelnummer, Artikelname, Specs, Preis) VALUES"
+
+	for idx, item := range artikel {
+		if idx == len(artikel)-1 {
+			rawQuery = fmt.Sprintf("%s (%d, '%s', '%s', '%s', %.2f)", rawQuery, item.Id, item.Artikelnummer, strings.ReplaceAll(item.Artikelname, "'", "\""), strings.ReplaceAll(item.Specs, "'", "\""), item.Preis)
+		} else {
+			rawQuery = fmt.Sprintf("%s (%d, '%s', '%s', '%s', %.2f),", rawQuery, item.Id, item.Artikelnummer, strings.ReplaceAll(item.Artikelname, "'", "\""), strings.ReplaceAll(item.Specs, "'", "\""), item.Preis)
 		}
 	}
+
+	rawQuery = fmt.Sprintf("%s ON DUPLICATE KEY UPDATE Artikelnummer = VALUES(Artikelnummer), Artikelname = VALUES(Artikelname), Specs = VALUES(Specs), Preis = VALUES(Preis);", rawQuery)
+
+	conn, err := sql.Open("mysql", connstring)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	_, err = conn.Exec(rawQuery)
+	return err
 }
